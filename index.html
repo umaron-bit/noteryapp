@@ -4,26 +4,18 @@
 <meta charset="UTF-8">
 <title>Notery Ultimate</title>
 <meta name="viewport" content="width=device-width, initial-scale=1.0">
-<link rel="manifest" href="manifest.json">
 <style>
-body { margin:0; font-family:system-ui; background:#0f172a; color:#e5e7eb; }
-#toolbar { display:flex; gap:8px; padding:10px; background:#020617; position:sticky; top:0; z-index:10; flex-wrap:wrap; }
-button, select, input[type=color] {
-  background:#020617; color:white; border:1px solid #334155; padding:6px 10px; border-radius:6px;
-}
-button.active { background:#2563eb; }
-#container { display:flex; height:calc(100vh - 60px); }
-#notes, #boardWrap { flex:1; }
-#notes {
-  padding:10px; outline:none; overflow:auto; background:#020617;
-}
-#notes[contenteditable=true]:empty:before {
-  content:"Start typing...";
-  color:#475569;
-}
-#boardWrap { position:relative; background:white; }
-canvas { display:block; }
-.hidden { display:none; }
+body{margin:0;font-family:system-ui;background:#0f172a;color:#e5e7eb;}
+#toolbar{display:flex;gap:6px;padding:8px;background:#020617;flex-wrap:wrap;position:sticky;top:0;z-index:10}
+button,select,input[type=color]{background:#020617;color:white;border:1px solid #334155;padding:5px 10px;border-radius:6px}
+button.active{background:#2563eb}
+#container{display:flex;height:calc(100vh - 52px)}
+#notes,#boardWrap{flex:1}
+#notes{padding:10px;outline:none;overflow:auto;background:#020617}
+#boardWrap{position:relative;background:white}
+canvas{display:block}
+.hidden{display:none}
+#laser{position:absolute;width:14px;height:14px;border-radius:50%;background:red;pointer-events:none;opacity:0.8;display:none}
 </style>
 </head>
 <body>
@@ -34,148 +26,111 @@ canvas { display:block; }
   <button onclick="setMode('split')" class="active">Split</button>
   <button onclick="setMode('projection')">Projection</button>
 
-  <select id="projectSelect" onchange="loadProject(this.value)"></select>
-  <button onclick="newProject()">New</button>
-
-  <button onclick="exportBoard()">Board → PNG</button>
-  <button onclick="exportNotes()">Notes → PDF</button>
-
-  <input type="color" id="colorPicker" value="#000000">
   <button onclick="setTool('draw')">Draw</button>
+  <button onclick="setTool('line')">Line</button>
+  <button onclick="setTool('rect')">Rect</button>
+  <button onclick="setTool('circle')">Circle</button>
   <button onclick="setTool('erase')">Erase</button>
+  <button onclick="setTool('laser')">Laser</button>
+  <input type="color" id="colorPicker" value="#000000">
 </div>
 
 <div id="container">
   <div id="notes" contenteditable="true"></div>
   <div id="boardWrap">
     <canvas id="board"></canvas>
+    <div id="laser"></div>
   </div>
 </div>
 
-<script src="https://cdnjs.cloudflare.com/ajax/libs/html2pdf.js/0.9.3/html2pdf.bundle.min.js"></script>
 <script>
-let mode='split', tool='draw', color='#000', drawing=false;
-let projects = JSON.parse(localStorage.getItem('notery_projects')||'{}');
-let current = localStorage.getItem('notery_current') || 'default';
+let mode='split', tool='draw', color='#000', drawing=false, start=null;
+const notes=document.getElementById('notes');
+const wrap=document.getElementById('boardWrap');
+const canvas=document.getElementById('board');
+const ctx=canvas.getContext('2d');
+const laser=document.getElementById('laser');
 
-const notes = document.getElementById('notes');
-const canvas = document.getElementById('board');
-const ctx = canvas.getContext('2d');
-const wrap = document.getElementById('boardWrap');
+let objects=[];
 
-function resize() {
-  canvas.width = wrap.clientWidth;
-  canvas.height = wrap.clientHeight;
+function resize(){
+  canvas.width=wrap.clientWidth;
+  canvas.height=wrap.clientHeight;
   redraw();
 }
-window.addEventListener('resize', resize);
-
-let strokes = [];
+window.onresize=resize;
 
 function redraw(){
   ctx.clearRect(0,0,canvas.width,canvas.height);
-  strokes.forEach(s=>{
-    ctx.strokeStyle = s.color;
-    ctx.lineWidth = s.size;
-    ctx.globalCompositeOperation = s.tool==='erase'?'destination-out':'source-over';
+  objects.forEach(o=>{
+    ctx.strokeStyle=o.color;
+    ctx.lineWidth=o.size;
+    ctx.globalCompositeOperation=o.tool==='erase'?'destination-out':'source-over';
     ctx.beginPath();
-    s.points.forEach((p,i)=>{
-      if(i===0) ctx.moveTo(p.x,p.y);
-      else ctx.lineTo(p.x,p.y);
-    });
+    if(o.tool==='draw'||o.tool==='line'){
+      o.points.forEach((p,i)=>i?ctx.lineTo(p.x,p.y):ctx.moveTo(p.x,p.y));
+    }
+    if(o.tool==='rect'){
+      const a=o.points[0],b=o.points[1];
+      ctx.rect(a.x,a.y,b.x-a.x,b.y-a.y);
+    }
+    if(o.tool==='circle'){
+      const a=o.points[0],b=o.points[1];
+      const r=Math.hypot(b.x-a.x,b.y-a.y);
+      ctx.arc(a.x,a.y,r,0,Math.PI*2);
+    }
     ctx.stroke();
   });
 }
 
-canvas.onpointerdown = e=>{
+canvas.onpointerdown=e=>{
+  if(tool==='laser'){ laser.style.display='block'; moveLaser(e); return; }
   drawing=true;
-  strokes.push({tool,color,size:tool==='erase'?20:3,points:[pos(e)]});
+  start=pos(e);
+  objects.push({tool,color,size:tool==='erase'?20:3,points:[start]});
 };
-canvas.onpointermove = e=>{
-  if(!drawing) return;
-  strokes[strokes.length-1].points.push(pos(e));
+canvas.onpointermove=e=>{
+  if(tool==='laser'){ moveLaser(e); return; }
+  if(!drawing)return;
+  const p=pos(e);
+  if(tool==='draw'||tool==='erase') objects.at(-1).points.push(p);
+  else objects.at(-1).points[1]=p;
   redraw();
 };
-canvas.onpointerup = ()=>{ drawing=false; save(); };
+canvas.onpointerup=()=>{
+  if(tool==='laser'){ laser.style.display='none'; return; }
+  drawing=false;
+};
 
 function pos(e){
   const r=canvas.getBoundingClientRect();
-  return {x:e.clientX-r.left, y:e.clientY-r.top};
+  return{x:e.clientX-r.left,y:e.clientY-r.top};
+}
+function moveLaser(e){
+  const p=pos(e);
+  laser.style.left=p.x-7+'px';
+  laser.style.top=p.y-7+'px';
 }
 
-function setTool(t){ tool=t; }
+function setTool(t){tool=t;}
 document.getElementById('colorPicker').oninput=e=>color=e.target.value;
 
 function setMode(m){
   mode=m;
   document.querySelectorAll('#toolbar button').forEach(b=>b.classList.remove('active'));
   event.target.classList.add('active');
-
-  notes.classList.toggle('hidden', m==='board' || m==='projection');
-  wrap.classList.toggle('hidden', m==='text');
-  document.getElementById('container').style.flexDirection = m==='projection'?'column':'row';
-}
-
-function save(){
-  projects[current]={ notes:notes.innerHTML, strokes };
-  localStorage.setItem('notery_projects', JSON.stringify(projects));
-  localStorage.setItem('notery_current', current);
-}
-
-notes.oninput=save;
-
-function loadProject(name){
-  save();
-  current=name;
-  const p=projects[name]||{notes:'',strokes:[]};
-  notes.innerHTML=p.notes||'';
-  strokes=p.strokes||[];
-  redraw();
-  localStorage.setItem('notery_current', name);
-}
-
-function newProject(){
-  const n=prompt('Project name?');
-  if(!n) return;
-  projects[n]={notes:'',strokes:[]};
-  refreshProjects();
-  loadProject(n);
-}
-
-function refreshProjects(){
-  const sel=document.getElementById('projectSelect');
-  sel.innerHTML='';
-  Object.keys(projects).forEach(k=>{
-    const o=document.createElement('option');
-    o.value=k;o.textContent=k;
-    sel.appendChild(o);
-  });
-  sel.value=current;
-}
-
-function exportBoard(){
-  const a=document.createElement('a');
-  a.download='board.png';
-  a.href=canvas.toDataURL();
-  a.click();
-}
-
-function exportNotes(){
-  html2pdf().from(notes).save('notes.pdf');
-}
-
-document.addEventListener('paste', e=>{
-  const item=[...e.clipboardData.items].find(i=>i.type.startsWith('image'));
-  if(item){
-    const file=item.getAsFile();
-    const r=new FileReader();
-    r.onload=()=>notes.innerHTML+=`<img src="${r.result}" style="max-width:100%;">`;
-    r.readAsDataURL(file);
+  notes.classList.toggle('hidden',m!=='text'&&m!=='split');
+  wrap.classList.toggle('hidden',m==='text');
+  if(m==='projection'){
+    notes.classList.add('hidden');
+    wrap.classList.remove('hidden');
+    document.getElementById('container').style.flexDirection='column';
+  }else{
+    document.getElementById('container').style.flexDirection='row';
   }
-});
+  resize();
+}
 
-refreshProjects();
-loadProject(current);
 resize();
 </script>
 </body>
